@@ -22,7 +22,8 @@ from google.cloud.aiplatform_v1beta1.services.prediction_service import (
 from google.protobuf import json_format
 from google.protobuf.struct_pb2 import Value
 from langchain_core.outputs import Generation, LLMResult
-from langchain_core.pydantic_v1 import BaseModel, Field, root_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing_extensions import Self
 from vertexai.generative_models._generative_models import (  # type: ignore
     SafetySettingsType,
 )
@@ -51,8 +52,8 @@ _DEFAULT_LOCATION = "us-central1"
 
 
 class _VertexAIBase(BaseModel):
-    client: Any = None  #: :meta private:
-    async_client: Any = None  #: :meta private:
+    client: Any = Field(default=None, exclude=True)  #: :meta private:
+    async_client: Any = Field(default=None, exclude=True)  #: :meta private:
     project: Optional[str] = None
     "The default GCP project to use when making Vertex API calls."
     location: str = Field(default=_DEFAULT_LOCATION)
@@ -67,7 +68,9 @@ class _VertexAIBase(BaseModel):
     "Optional list of stop words to use when generating."
     model_name: Optional[str] = Field(default=None, alias="model")
     "Underlying model name."
-    full_model_name: Optional[str] = None  #: :meta private:
+    full_model_name: Optional[str] = Field(
+        default=None, exclude=True
+    )  #: :meta private:
     "The full name of the model's endpoint."
     client_options: Optional["ClientOptions"] = Field(
         default=None, exclude=True
@@ -91,24 +94,23 @@ class _VertexAIBase(BaseModel):
     "when making API calls. If not provided, credentials will be ascertained from "
     "the environment."
 
-    class Config:
-        """Configuration for this pydantic object."""
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        protected_namespaces=(),
+    )
 
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-
-    @root_validator(pre=True)
-    def validate_params_base(cls, values: dict) -> dict:
+    @model_validator(mode="before")
+    @classmethod
+    def validate_params_base(cls, values: dict) -> Any:
         if "model" in values and "model_name" not in values:
             values["model_name"] = values.pop("model")
-        if values.get("project") is None:
-            values["project"] = initializer.global_config.project
         if values.get("api_transport") is None:
             values["api_transport"] = initializer.global_config._api_transport
         if values.get("api_endpoint"):
             api_endpoint = values["api_endpoint"]
         else:
-            location = values.get("location", cls.__fields__["location"].default)
+            location = values.get("location", cls.model_fields["location"].default)
             api_endpoint = f"{location}-{constants.PREDICTION_API_BASE_PATH}"
         client_options = ClientOptions(api_endpoint=api_endpoint)
         if values.get("client_cert_source"):
@@ -117,6 +119,15 @@ class _VertexAIBase(BaseModel):
         additional_headers = values.get("additional_headers", {})
         values["default_metadata"] = tuple(additional_headers.items())
         return values
+
+    @model_validator(mode="after")
+    def validate_project(self) -> Any:
+        if self.project is None:
+            if self.credentials and hasattr(self.credentials, "project_id"):
+                self.project = self.credentials.project_id
+            else:
+                self.project = initializer.global_config.project
+        return self
 
     @property
     def prediction_client(self) -> v1beta1PredictionServiceClient:
@@ -163,7 +174,7 @@ class _VertexAIBase(BaseModel):
 
 
 class _VertexAICommon(_VertexAIBase):
-    client_preview: Any = None  #: :meta private:
+    client_preview: Any = Field(default=None, exclude=True)  #: :meta private:
     model_name: str = Field(default=None, alias="model")
     "Underlying model name."
     temperature: Optional[float] = None
@@ -178,6 +189,8 @@ class _VertexAICommon(_VertexAIBase):
     "among the top-k most probable tokens. Top-k is ignored for Codey models."
     n: int = 1
     """How many completions to generate for each prompt."""
+    seed: Optional[int] = None
+    """Random seed for the generation."""
     streaming: bool = False
     """Whether to stream the results or not."""
     model_family: Optional[GoogleModelFamily] = None  #: :meta private:
@@ -232,6 +245,7 @@ class _VertexAICommon(_VertexAIBase):
             "temperature": self.temperature,
             "max_output_tokens": self.max_output_tokens,
             "candidate_count": self.n,
+            "seed": self.seed,
         }
         if not self.model_family == GoogleModelFamily.CODEY:
             params.update(
@@ -299,7 +313,7 @@ class _VertexAICommon(_VertexAIBase):
 class _BaseVertexAIModelGarden(_VertexAIBase):
     """Large language models served from Vertex AI Model Garden."""
 
-    async_client: Any = None  #: :meta private:
+    async_client: Any = Field(default=None, exclude=True)  #: :meta private:
     endpoint_id: str
     "A name of an endpoint where the model has been deployed."
     allowed_model_args: Optional[List[str]] = None
@@ -311,26 +325,26 @@ class _BaseVertexAIModelGarden(_VertexAIBase):
     single_example_per_request: bool = True
     "LLM endpoint currently serves only the first example in the request"
 
-    @root_validator()
-    def validate_environment(cls, values: Dict) -> Dict:
+    @model_validator(mode="after")
+    def validate_environment(self) -> Self:
         """Validate that the python package exists in environment."""
 
-        if not values["project"]:
+        if not self.project:
             raise ValueError(
                 "A GCP project should be provided to run inference on Model Garden!"
             )
 
         client_options = ClientOptions(
-            api_endpoint=f"{values['location']}-aiplatform.googleapis.com"
+            api_endpoint=f"{self.location}-aiplatform.googleapis.com"
         )
         client_info = get_client_info(module="vertex-ai-model-garden")
-        values["client"] = PredictionServiceClient(
+        self.client = PredictionServiceClient(
             client_options=client_options, client_info=client_info
         )
-        values["async_client"] = PredictionServiceAsyncClient(
+        self.async_client = PredictionServiceAsyncClient(
             client_options=client_options, client_info=client_info
         )
-        return values
+        return self
 
     @property
     def endpoint_path(self) -> str:

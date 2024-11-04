@@ -1,7 +1,6 @@
 """
 Test Vertex Feature Store Vector Search with BQ Vector Search vectorstore.
 """
-
 import os
 import random
 
@@ -13,6 +12,7 @@ from langchain_google_community.bq_storage_vectorstores.bigquery import (
 from tests.integration_tests.fake import FakeEmbeddings
 
 TEST_DATASET = "langchain_test_dataset"
+TEST_TEMP_DATASET = "temp_langchain_test_dataset"
 TEST_TABLE_NAME = f"langchain_test_table{str(random.randint(1,100000))}"
 TEST_FOS_NAME = "langchain_test_fos"
 EMBEDDING_SIZE = 768
@@ -35,7 +35,8 @@ def store_bq_vectorstore(request: pytest.FixtureRequest) -> BigQueryVectorStore:
         project_id=os.environ.get("PROJECT_ID", None),  # type: ignore[arg-type]
         embedding=embedding_model,
         location="us-central1",
-        dataset_name=TestBigQueryVectorStore_bq_vectorstore.dataset_name,
+        dataset_name=TEST_DATASET,
+        temp_dataset_name=TEST_TEMP_DATASET,
         table_name=TEST_TABLE_NAME,
     )
     TestBigQueryVectorStore_bq_vectorstore.store_bq_vectorstore.add_texts(
@@ -45,7 +46,7 @@ def store_bq_vectorstore(request: pytest.FixtureRequest) -> BigQueryVectorStore:
 
     def teardown() -> None:
         bigquery.Client(location="us-central1").delete_dataset(
-            TestBigQueryVectorStore_bq_vectorstore.dataset_name,
+            TEST_DATASET,
             delete_contents=True,
             not_found_ok=True,
         )
@@ -74,14 +75,15 @@ def existing_store_bq_vectorstore(
             project_id=os.environ.get("PROJECT_ID", None),  # type: ignore[arg-type]
             embedding=embedding_model,
             location="us-central1",
-            dataset_name=TestBigQueryVectorStore_bq_vectorstore.dataset_name,
+            dataset_name=TEST_DATASET,
+            temp_dataset_name=TEST_TEMP_DATASET,
             table_name=TEST_TABLE_NAME,
         )
     )
 
     def teardown() -> None:
         bigquery.Client(location="us-central1").delete_dataset(
-            TestBigQueryVectorStore_bq_vectorstore.dataset_name,
+            TEST_DATASET,
             delete_contents=True,
             not_found_ok=True,
         )
@@ -93,7 +95,6 @@ def existing_store_bq_vectorstore(
 class TestBigQueryVectorStore_bq_vectorstore:
     """BigQueryVectorStore tests class."""
 
-    dataset_name = TEST_DATASET
     store_bq_vectorstore: BigQueryVectorStore
     existing_store_bq_vectorstore: BigQueryVectorStore
     texts = ["apple", "ice cream", "Saturn", "candy", "banana"]
@@ -114,6 +115,65 @@ class TestBigQueryVectorStore_bq_vectorstore:
             "kind": "fruit",
         },
     ]
+
+    @pytest.mark.extended
+    def test_semantic_search_sql_filter_fruits(
+        self, store_bq_vectorstore: BigQueryVectorStore
+    ) -> None:
+        """Test on semantic similarity with sql filter."""
+        docs = store_bq_vectorstore.similarity_search(
+            "food", filter='kind="fruit"', k=10
+        )
+        kinds = [d.metadata["kind"] for d in docs]
+        assert "fruit" in kinds
+        assert "treat" not in kinds
+        assert "planet" not in kinds
+
+    @pytest.mark.extended
+    def test_get_doc_by_sql_filter(
+        self, store_bq_vectorstore: BigQueryVectorStore
+    ) -> None:
+        """Test on document retrieval with sql filter."""
+        docs = store_bq_vectorstore.get_documents(filter='kind="fruit"')
+        kinds = [d.metadata["kind"] for d in docs]
+        assert "fruit" in kinds
+        assert "treat" not in kinds
+        assert "planet" not in kinds
+
+    @pytest.mark.extended
+    def test_get_doc_by_complexe_sql_filter(
+        self, store_bq_vectorstore: BigQueryVectorStore
+    ) -> None:
+        """Test on document retrieval with sql filter."""
+        docs = store_bq_vectorstore.get_documents(filter='kind="fruit" OR kind="treat"')
+        kinds = [d.metadata["kind"] for d in docs]
+        assert "fruit" in kinds
+        assert "treat" in kinds
+        assert "planet" not in kinds
+
+    @pytest.mark.extended
+    def test_existing_store_semantic_search_sql_filter_fruits(
+        self, existing_store_bq_vectorstore: BigQueryVectorStore
+    ) -> None:
+        """Test on semantic similarity with sql filter."""
+        docs = existing_store_bq_vectorstore.similarity_search(
+            "food", filter='kind="fruit"', k=10
+        )
+        kinds = [d.metadata["kind"] for d in docs]
+        assert "fruit" in kinds
+        assert "treat" not in kinds
+        assert "planet" not in kinds
+
+    @pytest.mark.extended
+    def test_existing_store_get_doc_by_sql_filter(
+        self, existing_store_bq_vectorstore: BigQueryVectorStore
+    ) -> None:
+        """Test on document retrieval with sql filter."""
+        docs = existing_store_bq_vectorstore.get_documents(filter='kind="fruit"')
+        kinds = [d.metadata["kind"] for d in docs]
+        assert "fruit" in kinds
+        assert "treat" not in kinds
+        assert "planet" not in kinds
 
     @pytest.mark.extended
     def test_semantic_search(self, store_bq_vectorstore: BigQueryVectorStore) -> None:
@@ -169,6 +229,22 @@ class TestBigQueryVectorStore_bq_vectorstore:
         assert "planet" not in kinds
 
     @pytest.mark.extended
+    def test_get_documents_by_ids(
+        self, store_bq_vectorstore: BigQueryVectorStore
+    ) -> None:
+        """Test retrieving documents by their IDs."""
+        # Get the first two documents
+        first_two_docs = store_bq_vectorstore.get_documents()[:2]
+        ids_to_retrieve = [doc.metadata["__id"] for doc in first_two_docs]
+        # Retrieve them by their IDs
+        retrieved_docs = store_bq_vectorstore.get_documents(ids_to_retrieve)
+        assert len(retrieved_docs) == 2
+        # Check that the content and metadata match
+        for orig_doc, retrieved_doc in zip(first_two_docs, retrieved_docs):
+            assert orig_doc.page_content == retrieved_doc.page_content
+            assert orig_doc.metadata == retrieved_doc.metadata
+
+    @pytest.mark.extended
     def test_add_texts_with_embeddings(
         self, store_bq_vectorstore: BigQueryVectorStore
     ) -> None:
@@ -188,20 +264,41 @@ class TestBigQueryVectorStore_bq_vectorstore:
         assert retrieved_docs[1].metadata["kind"] == "planet"
 
     @pytest.mark.extended
-    def test_get_documents_by_ids(
+    def test_get_documents_by_ids_and_filters(
         self, store_bq_vectorstore: BigQueryVectorStore
     ) -> None:
-        """Test retrieving documents by their IDs."""
-        # Get the first two documents
-        first_two_docs = store_bq_vectorstore.get_documents()[:2]
-        ids_to_retrieve = [doc.metadata["__id"] for doc in first_two_docs]
-        # Retrieve them by their IDs
-        retrieved_docs = store_bq_vectorstore.get_documents(ids_to_retrieve)
-        assert len(retrieved_docs) == 2
+        """Test retrieving documents by their IDs and with filters."""
+        # Add new text for testing
+        new_texts = ["cat", "pigeon", "dog"]
+        new_metadatas = [{"kind": "mammal"}, {"kind": "bird"}, {"kind": "mammal"}]
+        new_embeddings = store_bq_vectorstore.embedding.embed_documents(new_texts)
+        ids = store_bq_vectorstore.add_texts_with_embeddings(
+            new_texts, new_embeddings, new_metadatas
+        )
+        # Retrieve addeds documents and
+        # retrieved documents them by their IDs and filters
+        orig_docs = store_bq_vectorstore.get_documents(ids=ids)
+        retrieved_docs = store_bq_vectorstore.get_documents(
+            ids=ids, filter='kind="mammal" AND content="dog"'
+        )
+        assert len(retrieved_docs) == 1
         # Check that the content and metadata match
-        for orig_doc, retrieved_doc in zip(first_two_docs, retrieved_docs):
-            assert orig_doc.page_content == retrieved_doc.page_content
-            assert orig_doc.metadata == retrieved_doc.metadata
+        for orig_doc, retrieved_doc in zip(orig_docs, retrieved_docs):
+            if (
+                retrieved_doc.metadata == "mammal"
+                and retrieved_doc.page_content == "dog"
+            ):
+                assert orig_doc.page_content == retrieved_doc.page_content
+                assert orig_doc.metadata == retrieved_doc.metadata
+        # Check that the filters worked
+        kinds = [d.metadata["kind"] for d in retrieved_docs]
+        page_content = [d.page_content for d in retrieved_docs]
+        assert "mammal" in kinds
+        assert "bird" not in kinds
+        assert "fruit" not in kinds
+        assert "treat" not in kinds
+        assert "planet" not in kinds
+        assert "dog" == page_content[0]
 
     @pytest.mark.extended
     def test_delete_documents(self, store_bq_vectorstore: BigQueryVectorStore) -> None:

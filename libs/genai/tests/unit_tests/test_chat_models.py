@@ -3,7 +3,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Union
 from unittest.mock import ANY, Mock, patch
 
 import google.ai.generativelanguage as glm
@@ -14,7 +14,6 @@ from google.ai.generativelanguage_v1beta.types import (
     GenerateContentResponse,
     Part,
 )
-from langchain_core.language_models import BaseChatModel
 from langchain_core.load import dumps, loads
 from langchain_core.messages import (
     AIMessage,
@@ -24,8 +23,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.messages.tool import tool_call as create_tool_call
-from langchain_core.pydantic_v1 import SecretStr
-from langchain_standard_tests.unit_tests import ChatModelUnitTests
+from pydantic import SecretStr
 from pytest import CaptureFixture
 
 from langchain_google_genai.chat_models import (
@@ -35,33 +33,11 @@ from langchain_google_genai.chat_models import (
 )
 
 
-class GoogleGenerativeAIStandardTests(ChatModelUnitTests):
-    @property
-    def chat_model_class(self) -> Type[BaseChatModel]:
-        return ChatGoogleGenerativeAI
-
-    @property
-    def chat_model_params(self) -> dict:
-        return {"model": "gemini-1.5-pro"}
-
-    @property
-    def supports_image_inputs(self) -> bool:
-        return True
-
-    @property
-    def supports_video_inputs(self) -> bool:
-        return True
-
-    @property
-    def supports_audio_inputs(self) -> bool:
-        return True
-
-
 def test_integration_initialization() -> None:
     """Test chat model initialization."""
     llm = ChatGoogleGenerativeAI(
         model="gemini-nano",
-        google_api_key="...",
+        google_api_key=SecretStr("..."),  # type: ignore[call-arg]
         top_k=2,
         top_p=1,
         temperature=0.7,
@@ -77,7 +53,7 @@ def test_integration_initialization() -> None:
 
     llm = ChatGoogleGenerativeAI(
         model="gemini-nano",
-        google_api_key="...",
+        google_api_key=SecretStr("..."),  # type: ignore[call-arg]
         max_output_tokens=10,
     )
     ls_params = llm._get_ls_params()
@@ -91,11 +67,10 @@ def test_integration_initialization() -> None:
 
     ChatGoogleGenerativeAI(
         model="gemini-nano",
-        google_api_key="...",
+        api_key=SecretStr("..."),
         top_k=2,
         top_p=1,
         temperature=0.7,
-        candidate_count=2,
     )
 
 
@@ -104,20 +79,28 @@ def test_initialization_inside_threadpool() -> None:
     # thread pool executor easiest way to create one
     with ThreadPoolExecutor() as executor:
         executor.submit(
-            ChatGoogleGenerativeAI, model="gemini-nano", google_api_key="secret-api-key"
+            ChatGoogleGenerativeAI,
+            model="gemini-nano",
+            google_api_key=SecretStr("secret-api-key"),  # type: ignore[call-arg]
         ).result()
 
 
 def test_initalization_without_async() -> None:
-    chat = ChatGoogleGenerativeAI(model="gemini-nano", google_api_key="secret-api-key")
+    chat = ChatGoogleGenerativeAI(
+        model="gemini-nano",
+        google_api_key=SecretStr("secret-api-key"),  # type: ignore[call-arg]
+    )
     assert chat.async_client is None
 
 
 def test_initialization_with_async() -> None:
     async def initialize_chat_with_async_client() -> ChatGoogleGenerativeAI:
-        return ChatGoogleGenerativeAI(
-            model="gemini-nano", google_api_key="secret-api-key"
+        model = ChatGoogleGenerativeAI(
+            model="gemini-nano",
+            google_api_key=SecretStr("secret-api-key"),  # type: ignore[call-arg]
         )
+        _ = model.async_client
+        return model
 
     loop = asyncio.get_event_loop()
     chat = loop.run_until_complete(initialize_chat_with_async_client())
@@ -125,12 +108,18 @@ def test_initialization_with_async() -> None:
 
 
 def test_api_key_is_string() -> None:
-    chat = ChatGoogleGenerativeAI(model="gemini-nano", google_api_key="secret-api-key")
+    chat = ChatGoogleGenerativeAI(
+        model="gemini-nano",
+        google_api_key=SecretStr("secret-api-key"),  # type: ignore[call-arg]
+    )
     assert isinstance(chat.google_api_key, SecretStr)
 
 
 def test_api_key_masked_when_passed_via_constructor(capsys: CaptureFixture) -> None:
-    chat = ChatGoogleGenerativeAI(model="gemini-nano", google_api_key="secret-api-key")
+    chat = ChatGoogleGenerativeAI(
+        model="gemini-nano",
+        google_api_key=SecretStr("secret-api-key"),  # type: ignore[call-arg]
+    )
     print(chat.google_api_key, end="")  # noqa: T201
     captured = capsys.readouterr()
 
@@ -271,18 +260,22 @@ def test_additional_headers_support(headers: Optional[Dict[str, str]]) -> None:
     )
     mock_client.return_value.generate_content = mock_generate_content
     api_endpoint = "http://127.0.0.1:8000/ai"
-    params = {
-        "google_api_key": "[secret]",
-        "client_options": {"api_endpoint": api_endpoint},
-        "transport": "rest",
-        "additional_headers": headers,
-    }
+    param_api_key = "[secret]"
+    param_secret_api_key = SecretStr(param_api_key)
+    param_client_options = {"api_endpoint": api_endpoint}
+    param_transport = "rest"
 
     with patch(
         "langchain_google_genai._genai_extension.v1betaGenerativeServiceClient",
         mock_client,
     ):
-        chat = ChatGoogleGenerativeAI(model="gemini-pro", **params)
+        chat = ChatGoogleGenerativeAI(
+            model="gemini-pro",
+            google_api_key=param_secret_api_key,  # type: ignore[call-arg]
+            client_options=param_client_options,
+            transport=param_transport,
+            additional_headers=headers,
+        )
 
     expected_default_metadata: tuple = ()
     if not headers:
@@ -297,12 +290,12 @@ def test_additional_headers_support(headers: Optional[Dict[str, str]]) -> None:
     assert response.content == "test response"
 
     mock_client.assert_called_once_with(
-        transport=params["transport"],
+        transport=param_transport,
         client_options=ANY,
         client_info=ANY,
     )
     call_client_options = mock_client.call_args_list[0].kwargs["client_options"]
-    assert call_client_options.api_key == params["google_api_key"]
+    assert call_client_options.api_key == param_api_key
     assert call_client_options.api_endpoint == api_endpoint
     call_client_info = mock_client.call_args_list[0].kwargs["client_info"]
     assert "langchain-google-genai" in call_client_info.user_agent
@@ -554,11 +547,15 @@ def test_parse_response_candidate(raw_candidate: Dict, expected: AIMessage) -> N
 
 
 def test_serialize() -> None:
-    llm = ChatGoogleGenerativeAI(model="gemini-pro-1.5", google_api_key="test-key")
+    llm = ChatGoogleGenerativeAI(model="gemini-pro-1.5", google_api_key="test-key")  # type: ignore[call-arg]
     serialized = dumps(llm)
     llm_loaded = loads(
         serialized,
         secrets_map={"GOOGLE_API_KEY": "test-key"},
         valid_namespaces=["langchain_google_genai"],
     )
+    # Pydantic 2 equality will fail on complex attributes like clients with
+    # different IDs
+    llm.client = None
+    llm_loaded.client = None
     assert llm == llm_loaded

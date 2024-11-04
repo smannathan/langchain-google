@@ -4,7 +4,6 @@ Set the following environment variables before the tests:
 export PROJECT_ID=... - set to your Google Cloud project ID
 export DATA_STORE_ID=... - the ID of the search engine to use for the test
 """
-
 from __future__ import annotations
 
 import json
@@ -16,11 +15,12 @@ from google.api_core.exceptions import InvalidArgument
 from google.protobuf.json_format import MessageToDict
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
 from langchain_core.load import Serializable, load
-from langchain_core.pydantic_v1 import Extra, Field, root_validator
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.tools import BaseTool
 from langchain_core.utils import get_from_dict_or_env
+from pydantic import ConfigDict, Field, PrivateAttr, model_validator
 
 from langchain_google_community._utils import get_client_info
 
@@ -64,8 +64,9 @@ class _BaseVertexAISearchRetriever(Serializable):
     def __reduce__(self) -> Any:
         return _load, (self.to_json(),)
 
-    @root_validator(pre=True)
-    def validate_environment(cls, values: Dict) -> Dict:
+    @model_validator(mode="before")
+    @classmethod
+    def validate_environment(cls, values: Dict) -> Any:
         """Validates the environment."""
         try:
             from google.cloud import discoveryengine_v1beta  # noqa: F401
@@ -139,25 +140,35 @@ class _BaseVertexAISearchRetriever(Serializable):
             document_dict = MessageToDict(
                 result.document._pb, preserving_proto_field_name=True
             )
-            derived_struct_data = document_dict.get("derived_struct_data")
-            if not derived_struct_data:
+            derived_struct_data = document_dict.get("derived_struct_data", {})
+
+            if not derived_struct_data or chunk_type not in derived_struct_data:
                 continue
 
-            doc_metadata = document_dict.get("struct_data", {})
-            doc_metadata["id"] = document_dict["id"]
-
-            if chunk_type not in derived_struct_data:
-                continue
+            doc_metadata = {
+                "id": document_dict["id"],
+                "source": derived_struct_data.get("link", ""),
+                **document_dict.get("struct_data", {}),
+            }
 
             for chunk in derived_struct_data[chunk_type]:
                 chunk_metadata = doc_metadata.copy()
-                chunk_metadata["source"] = derived_struct_data.get("link", "")
 
-                if (
-                    chunk_type == "extractive_answers"
-                    or chunk_type == "extractive_segments"
-                ):
-                    chunk_metadata["source"] += f":{chunk.get('pageNumber', '')}"
+                if chunk_type in ("extractive_answers", "extractive_segments"):
+                    chunk_metadata["source"] += f"{chunk.get('pageNumber', '')}"
+
+                    if chunk_type == "extractive_segments":
+                        chunk_metadata.update(
+                            {
+                                "previous_segments": chunk.get("previous_segments", []),
+                                "next_segments": chunk.get("next_segments", []),
+                            }
+                        )
+                        if "relevanceScore" in chunk:
+                            chunk_metadata["relevance_score"] = chunk.get(
+                                "relevanceScore"
+                            )
+
                 documents.append(
                     Document(
                         page_content=chunk.get("content", ""), metadata=chunk_metadata
@@ -218,17 +229,31 @@ class VertexAISearchRetriever(BaseRetriever, _BaseVertexAISearchRetriever):
 
     filter: Optional[str] = None
     """Filter expression."""
+    order_by: Optional[str] = None
+    """Comma-separated list of fields to order by."""
+    canonical_filter: Optional[str] = None
+    """Canonical filter expression."""
     get_extractive_answers: bool = False
     """If True return Extractive Answers, otherwise return Extractive Segments or Snippets."""  # noqa: E501
     max_documents: int = Field(default=5, ge=1, le=100)
     """The maximum number of documents to return."""
     max_extractive_answer_count: int = Field(default=1, ge=1, le=5)
-    """The maximum number of extractive answers returned in each search result.
-    At most 5 answers will be returned for each SearchResult.
+    """The maximum number of extractive answers to return per search result.
     """
-    max_extractive_segment_count: int = Field(default=1, ge=1, le=1)
-    """The maximum number of extractive segments returned in each search result.
-    Currently one segment will be returned for each SearchResult.
+    max_extractive_segment_count: int = Field(default=1, ge=1, le=10)
+    """The maximum number of extractive segments to return per search result.
+    """
+    return_extractive_segment_score: bool = False
+    """If set to True, the relevance score for each extractive segment will be included
+    in the search results. This can be useful for ranking or filtering segments.
+    """
+    num_previous_segments: int = Field(default=1, ge=1, le=3)
+    """Specifies the number of text segments preceding the matched segment to return.
+    This provides context before the relevant text. Value must be between 1 and 3.
+    """
+    num_next_segments: int = Field(default=1, ge=1, le=3)
+    """Specifies the number of text segments following the matched segment to return.
+    This provides context after the relevant text. Value must be between 1 and 3.
     """
     query_expansion_condition: int = Field(default=1, ge=0, le=2)
     """Specification to determine under which conditions query expansion should occur.
@@ -254,16 +279,31 @@ class VertexAISearchRetriever(BaseRetriever, _BaseVertexAISearchRetriever):
     https://cloud.google.com/generative-ai-app-builder/docs/boost-search-results
     https://cloud.google.com/generative-ai-app-builder/docs/reference/rest/v1beta/BoostSpec
     """
+    custom_embedding: Optional[Embeddings] = None
+    """Custom embedding model for the retriever. (Bring your own embedding)
+    It needs to match the embedding model that was used to embed docs in the datastore.
+    It needs to be a langchain embedding VertexAIEmbeddings(project="{PROJECT}")
+    If you provide an embedding model, you also need to provide a ranking_expression and
+    a custom_embedding_field_path.
+    https://cloud.google.com/generative-ai-app-builder/docs/bring-embeddings
+    """
+    custom_embedding_field_path: Optional[str] = None
+    """ The field path for the custom embedding used in the Vertex AI datastore schema.
+    """
+    custom_embedding_ratio: Optional[float] = 0.0
+    """Controls the ranking of results. Value should be between 0 and 1.
+    It will generate the ranking_expression in the following manner:
+    "{custom_embedding_ratio} * dotProduct({custom_embedding_field_path}) +
+    {1 - custom_embedding_ratio} * relevance_score"
+    """
 
-    _client: SearchServiceClient
-    _serving_config: str
+    _client: SearchServiceClient = PrivateAttr()
+    _serving_config: str = PrivateAttr()
 
-    class Config:
-        """Configuration for this pydantic object."""
-
-        extra = Extra.forbid
-        arbitrary_types_allowed = True
-        underscore_attrs_are_private = True
+    model_config = ConfigDict(
+        extra="forbid",
+        arbitrary_types_allowed=True,
+    )
 
     def __init__(self, **kwargs: Any) -> None:
         """Initializes private fields."""
@@ -313,6 +353,11 @@ class VertexAISearchRetriever(BaseRetriever, _BaseVertexAISearchRetriever):
                 extractive_content_spec = (
                     SearchRequest.ContentSearchSpec.ExtractiveContentSpec(
                         max_extractive_segment_count=self.max_extractive_segment_count,
+                        num_previous_segments=self.num_previous_segments,
+                        num_next_segments=self.num_next_segments,
+                        return_extractive_segment_score=(
+                            self.return_extractive_segment_score
+                        ),
                     )
                 )
             content_search_spec = dict(extractive_content_spec=extractive_content_spec)
@@ -356,9 +401,51 @@ class VertexAISearchRetriever(BaseRetriever, _BaseVertexAISearchRetriever):
         else:
             content_search_spec = None
 
+        if (
+            self.custom_embedding is not None
+            or self.custom_embedding_field_path is not None
+        ):
+            if self.custom_embedding is None:
+                raise ValueError(
+                    "Please provide a custom embedding model if you provide a "
+                    "custom_embedding_field_path."
+                )
+            if self.custom_embedding_field_path is None:
+                raise ValueError(
+                    "Please provide a custom_embedding_field_path if you provide a "
+                    "custom embedding model."
+                )
+            if self.custom_embedding_ratio is None:
+                raise ValueError(
+                    "Please provide a custom_embedding_ratio if you provide a "
+                    "custom embedding model or a custom_embedding_field_path."
+                )
+            if not 0 <= self.custom_embedding_ratio <= 1:
+                raise ValueError(
+                    "Custom embedding ratio must be between 0 and 1 "
+                    f"when using custom embeddings. Got {self.custom_embedding_ratio}"
+                )
+            embedding_vector = SearchRequest.EmbeddingSpec.EmbeddingVector(
+                field_path=self.custom_embedding_field_path,
+                vector=self.custom_embedding.embed_query(query),
+            )
+            embedding_spec = SearchRequest.EmbeddingSpec(
+                embedding_vectors=[embedding_vector]
+            )
+            ranking_expression = (
+                f"{self.custom_embedding_ratio} * "
+                f"dotProduct({self.custom_embedding_field_path}) + "
+                f"{1 - self.custom_embedding_ratio} * relevance_score"
+            )
+        else:
+            embedding_spec = None
+            ranking_expression = None
+
         return SearchRequest(
             query=query,
             filter=self.filter,
+            order_by=self.order_by,
+            canonical_filter=self.canonical_filter,
             serving_config=self._serving_config,
             page_size=self.max_documents,
             content_search_spec=content_search_spec,
@@ -367,6 +454,8 @@ class VertexAISearchRetriever(BaseRetriever, _BaseVertexAISearchRetriever):
             boost_spec=SearchRequest.BoostSpec(**self.boost_spec)
             if self.boost_spec
             else None,
+            embedding_spec=embedding_spec,
+            ranking_expression=ranking_expression,
         )
 
     def _get_relevant_documents(
@@ -418,15 +507,13 @@ class VertexAIMultiTurnSearchRetriever(BaseRetriever, _BaseVertexAISearchRetriev
     conversation_id: str = "-"
     """Vertex AI Search Conversation ID."""
 
-    _client: ConversationalSearchServiceClient
-    _serving_config: str
+    _client: ConversationalSearchServiceClient = PrivateAttr()
+    _serving_config: str = PrivateAttr()
 
-    class Config:
-        """Configuration for this pydantic object."""
-
-        extra = Extra.ignore
-        arbitrary_types_allowed = True
-        underscore_attrs_are_private = True
+    model_config = ConfigDict(
+        extra="ignore",
+        arbitrary_types_allowed=True,
+    )
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
@@ -502,10 +589,10 @@ class VertexAISearchSummaryTool(BaseTool, VertexAISearchRetriever):
     summary_spec_kwargs: Dict[str, Any] = Field(default_factory=dict)
     """ Additional kwargs for `SearchRequest.ContentSearchSpec.SummarySpec`"""
 
-    class Config(VertexAISearchRetriever.Config):
-        """Redefinition to specify that inherits config from `VertexAISearchRetriever`
-        not BaseTool
-        """
+    model_config = ConfigDict(
+        extra="forbid",
+        arbitrary_types_allowed=True,
+    )
 
     def _get_content_spec_kwargs(self) -> Optional[Dict[str, Any]]:
         """Adds additional summary_spec parameters to the configuration of the search.

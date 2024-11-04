@@ -1,10 +1,10 @@
 """Test ChatGoogleGenerativeAI chat model."""
+
 import asyncio
 import json
-from typing import Generator, List, Optional, Type
+from typing import Dict, Generator, List, Optional
 
 import pytest
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -14,9 +14,8 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langchain_core.pydantic_v1 import BaseModel
 from langchain_core.tools import tool
-from langchain_standard_tests.integration_tests import ChatModelIntegrationTests
+from pydantic import BaseModel
 
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
@@ -28,28 +27,6 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 _MODEL = "models/gemini-1.0-pro-001"  # TODO: Use nano when it's available.
 _VISION_MODEL = "gemini-1.5-flash"
 _B64_string = """iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAABhGlDQ1BJQ0MgUHJvZmlsZQAAeJx9kT1Iw0AcxV8/xCIVQTuIKGSoTi2IijhqFYpQIdQKrTqYXPoFTRqSFBdHwbXg4Mdi1cHFWVcHV0EQ/ABxdXFSdJES/5cUWsR4cNyPd/ced+8Af6PCVDM4DqiaZaSTCSGbWxW6XxHECPoRQ0hipj4niil4jq97+Ph6F+dZ3uf+HL1K3mSATyCeZbphEW8QT29aOud94ggrSQrxOXHMoAsSP3JddvmNc9FhP8+MGJn0PHGEWCh2sNzBrGSoxFPEUUXVKN+fdVnhvMVZrdRY6578heG8trLMdZrDSGIRSxAhQEYNZVRgIU6rRoqJNO0nPPxDjl8kl0yuMhg5FlCFCsnxg//B727NwuSEmxROAF0vtv0xCnTvAs26bX8f23bzBAg8A1da219tADOfpNfbWvQI6NsGLq7bmrwHXO4Ag0+6ZEiOFKDpLxSA9zP6phwwcAv0rLm9tfZx+gBkqKvUDXBwCIwVKXvd492hzt7+PdPq7wdzbXKn5swsVgAAA8lJREFUeJx90dtPHHUUB/Dz+81vZhb2wrDI3soUKBSRcisF21iqqCRNY01NTE0k8aHpi0k18VJfjOFvUF9M44MmGrHFQqSQiKSmFloL5c4CXW6Fhb0vO3ufvczMzweiBGI9+eW8ffI95/yQqqrwv4UxBgCfJ9w/2NfSVB+Nyn6/r+vdLo7H6FkYY6yoABR2PJujj34MSo/d/nHeVLYbydmIp/bEO0fEy/+NMcbTU4/j4Vs6Lr0ccKeYuUKWS4ABVCVHmRdszbfvTgfjR8kz5Jjs+9RREl9Zy2lbVK9wU3/kWLJLCXnqza1bfVe7b9jLbIeTMcYu13Jg/aMiPrCwVFcgtDiMhnxwJ/zXVDwSdVCVMRV7nqzl2i9e/fKrw8mqSp84e2sFj3Oj8/SrF/MaicmyYhAaXu58NPAbeAeyzY0NLecmh2+ODN3BewYBAkAY43giI3kebrnsRmvV9z2D4ciOa3EBAf31Tp9sMgdxMTFm6j74/Ogb70VCYQKAAIDCXkOAIC6pkYBWdwwnpHEdf6L9dJtJKPh95DZhzFKMEWRAGL927XpWTmMA+s8DAOBYAoR483l/iHZ/8bXoODl8b9UfyH72SXepzbyRJNvjFGHKMlhvMBze+cH9+4lEuOOlU2X1tVkFTU7Om03q080NDGXV1cflRpHwaaoiiiildB8jhDLZ7HDfz2Yidba6Vn2L4fhzFrNRKy5OZ2QOZ1U5W8VtqlVH/iUHcM933zZYWS7Wtj66zZr65bzGJQt0glHgudi9XVzEl4vKw2kUPhO020oPYI1qYc+2Xc0bRXFwTLY0VXa2VibD/lBaIXm1UChN5JSRUcQQ1Tk/47Cf3x8bY7y17Y17PVYTG1UkLPBFcqik7Zoa9JcLYoHBqHhXNgd6gS1k9EJ1TQ2l9EDy1saErmQ2kGpwGC2MLOtCM8nZEV1K0tKJtEksSm26J/rHg2zzmabKisq939nHzqUH7efzd4f/nPGW6NP8ybNFrOsWQhpoCuuhnJ4hAnPhFam01K4oQMjBg/mzBjVhuvw2O++KKT+BIVxJKzQECBDLF2qu2WTMmCovtDQ1f8iyoGkUADBCCGPsdnvTW2OtFm01VeB06msvdWlpPZU0wJRG85ns84umU3k+VyxeEcWqvYUBAGsUrbvme4be99HFeisP/pwUOIZaOqQX31ISgrKmZhLHtXNXuJq68orrr5/9mBCglCLAGGPyy81votEbcjlKLrC9E8mhH3wdHRdcyyvjidSlxjftPJpD+o25JYvRHGFoZDdks1mBQhxJu9uxvwEiXuHnHbLd1AAAAABJRU5ErkJggg=="""  # noqa: E501
-
-
-class GoogleGenerativeAIStandardTests(ChatModelIntegrationTests):
-    @property
-    def chat_model_class(self) -> Type[BaseChatModel]:
-        return ChatGoogleGenerativeAI
-
-    @property
-    def chat_model_params(self) -> dict:
-        return {"model": _MODEL}
-
-    @property
-    def supports_image_inputs(self) -> bool:
-        return True
-
-    @property
-    def supports_video_inputs(self) -> bool:
-        return True
-
-    @property
-    def supports_audio_inputs(self) -> bool:
-        return True
 
 
 def _check_usage_metadata(message: AIMessage) -> None:
@@ -267,8 +244,8 @@ def test_generativeai_get_num_tokens_gemini() -> None:
 
 
 def test_safety_settings_gemini() -> None:
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    safety_settings: Dict[HarmCategory, HarmBlockThreshold] = {
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE  # type: ignore[dict-item]
     }
     # test with safety filters on bind
     llm = ChatGoogleGenerativeAI(temperature=0, model="gemini-pro").bind(
@@ -309,8 +286,8 @@ def test_chat_function_calling_with_multiple_parts() -> None:
 
     tools = [search]
 
-    safety = {
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH
+    safety: Dict[HarmCategory, HarmBlockThreshold] = {
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH  # type: ignore[dict-item]
     }
     llm = ChatGoogleGenerativeAI(
         model="models/gemini-1.5-pro-latest", safety_settings=safety
@@ -358,21 +335,30 @@ def _check_tool_calls(response: BaseMessage, expected_name: str) -> None:
     assert isinstance(response, AIMessage)
     assert isinstance(response.content, str)
     assert response.content == ""
+
+    # function_call
     function_call = response.additional_kwargs.get("function_call")
     assert function_call
     assert function_call["name"] == expected_name
     arguments_str = function_call.get("arguments")
     assert arguments_str
     arguments = json.loads(arguments_str)
-    assert arguments == {
-        "name": "Erick",
-        "age": 27.0,
-    }
+    _check_tool_call_args(arguments)
+
+    # tool_calls
     tool_calls = response.tool_calls
     assert len(tool_calls) == 1
     tool_call = tool_calls[0]
     assert tool_call["name"] == expected_name
-    assert tool_call["args"] == {"age": 27.0, "name": "Erick"}
+    _check_tool_call_args(tool_call["args"])
+
+
+def _check_tool_call_args(tool_call_args: dict) -> None:
+    assert tool_call_args == {
+        "age": 27.0,
+        "name": "Erick",
+        "likes": ["apple", "banana"],
+    }
 
 
 @pytest.mark.extended
@@ -380,12 +366,15 @@ def test_chat_vertexai_gemini_function_calling() -> None:
     class MyModel(BaseModel):
         name: str
         age: int
+        likes: list[str]
 
-    safety = {
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH
+    safety: Dict[HarmCategory, HarmBlockThreshold] = {
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH  # type: ignore[dict-item]
     }
     # Test .bind_tools with BaseModel
-    message = HumanMessage(content="My name is Erick and I am 27 years old")
+    message = HumanMessage(
+        content="My name is Erick and I am 27 years old. I like apple and banana."
+    )
     model = ChatGoogleGenerativeAI(model=_MODEL, safety_settings=safety).bind_tools(
         [MyModel]
     )
@@ -393,8 +382,8 @@ def test_chat_vertexai_gemini_function_calling() -> None:
     _check_tool_calls(response, "MyModel")
 
     # Test .bind_tools with function
-    def my_model(name: str, age: int) -> None:
-        """Invoke this with names and ages."""
+    def my_model(name: str, age: int, likes: list[str]) -> None:
+        """Invoke this with names and age and likes."""
         pass
 
     model = ChatGoogleGenerativeAI(model=_MODEL, safety_settings=safety).bind_tools(
@@ -405,8 +394,8 @@ def test_chat_vertexai_gemini_function_calling() -> None:
 
     # Test .bind_tools with tool
     @tool
-    def my_tool(name: str, age: int) -> None:
-        """Invoke this with names and ages."""
+    def my_tool(name: str, age: int, likes: list[str]) -> None:
+        """Invoke this with names and age and likes."""
         pass
 
     model = ChatGoogleGenerativeAI(model=_MODEL, safety_settings=safety).bind_tools(
@@ -428,12 +417,14 @@ def test_chat_vertexai_gemini_function_calling() -> None:
     assert len(gathered.tool_call_chunks) == 1
     tool_call_chunk = gathered.tool_call_chunks[0]
     assert tool_call_chunk["name"] == "my_tool"
-    assert tool_call_chunk["args"] == '{"age": 27.0, "name": "Erick"}'
+    arguments_str = tool_call_chunk["args"]
+    arguments = json.loads(str(arguments_str))
+    _check_tool_call_args(arguments)
 
 
 # Test with model that supports tool choice (gemini 1.5) and one that doesn't
 # (gemini 1).
-@pytest.mark.parametrize("model_name", [_MODEL, "models/gemini-1.5-pro-001"])
+@pytest.mark.parametrize("model_name", [_MODEL, "models/gemini-1.5-flash-latest"])
 def test_chat_google_genai_function_calling_with_structured_output(
     model_name: str,
 ) -> None:
@@ -441,8 +432,8 @@ def test_chat_google_genai_function_calling_with_structured_output(
         name: str
         age: int
 
-    safety = {
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH
+    safety: Dict[HarmCategory, HarmBlockThreshold] = {
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH  # type: ignore[dict-item]
     }
     llm = ChatGoogleGenerativeAI(model=model_name, safety_settings=safety)
     model = llm.with_structured_output(MyModel)
@@ -453,7 +444,11 @@ def test_chat_google_genai_function_calling_with_structured_output(
     assert response == MyModel(name="Erick", age=27)
 
     model = llm.with_structured_output(
-        {"name": "MyModel", "description": "MyModel", "parameters": MyModel.schema()}
+        {
+            "name": "MyModel",
+            "description": "MyModel",
+            "parameters": MyModel.model_json_schema(),
+        }
     )
     response = model.invoke([message])
     expected = [

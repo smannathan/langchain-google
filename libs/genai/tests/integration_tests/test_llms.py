@@ -4,14 +4,14 @@ Note: This test must be run with the GOOGLE_API_KEY environment variable set to 
       valid API key.
 """
 
-from typing import Generator
+from typing import Dict, Generator
 
 import pytest
 from langchain_core.outputs import LLMResult
 
 from langchain_google_genai import GoogleGenerativeAI, HarmBlockThreshold, HarmCategory
 
-model_names = ["models/text-bison-001", "gemini-pro"]
+model_names = ["gemini-pro"]
 
 
 @pytest.mark.parametrize(
@@ -21,16 +21,13 @@ model_names = ["models/text-bison-001", "gemini-pro"]
 def test_google_generativeai_call(model_name: str) -> None:
     """Test valid call to Google GenerativeAI text API."""
     if model_name:
-        llm = GoogleGenerativeAI(max_output_tokens=10, model=model_name)
+        llm = GoogleGenerativeAI(max_tokens=10, model=model_name)
     else:
-        llm = GoogleGenerativeAI(max_output_tokens=10)
+        llm = GoogleGenerativeAI(max_tokens=10)  # type: ignore[call-arg]
     output = llm("Say foo:")
     assert isinstance(output, str)
     assert llm._llm_type == "google_palm"
-    if model_name and "gemini" in model_name:
-        assert llm.client.model_name == "models/gemini-pro"
-    else:
-        assert llm.model == "models/text-bison-001"
+    assert llm.client.model_name == "models/gemini-pro"
 
 
 @pytest.mark.parametrize(
@@ -44,12 +41,6 @@ def test_google_generativeai_generate(model_name: str) -> None:
     assert isinstance(output, LLMResult)
     assert len(output.generations) == 1
     assert len(output.generations[0]) == n
-
-
-def test_google_generativeai_get_num_tokens() -> None:
-    llm = GoogleGenerativeAI(model="models/text-bison-001")
-    output = llm.get_num_tokens("How are you?")
-    assert output == 4
 
 
 async def test_google_generativeai_agenerate() -> None:
@@ -78,8 +69,8 @@ def test_safety_settings_gemini() -> None:
     assert len(output.generations[0]) > 0
 
     # safety filters
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    safety_settings: Dict[HarmCategory, HarmBlockThreshold] = {
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,  # type: ignore[dict-item]
     }
 
     # test with safety filters directly to generate

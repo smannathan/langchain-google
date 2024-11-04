@@ -1,16 +1,15 @@
-name: test
+name: Integration tests
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       working-directory:
         required: true
         type: string
-        description: "From which folder this pipeline executes"
-      langchain-location:
-        required: false
+      python-version:
+        required: true
         type: string
-        description: "Relative path to the langchain library folder"
+        description: "Python version to use"
 
 env:
   POETRY_VERSION: "1.7.1"
@@ -21,41 +20,37 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version:
-          - "3.9"
-          - "3.10"
-          - "3.11"
-          - "3.12"
-    name: "make test #${{ matrix.python-version }}"
+    name: Python ${{ inputs.python-version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }} + Poetry ${{ env.POETRY_VERSION }}
+      - name: Set up Python ${{ inputs.python-version }} + Poetry ${{ env.POETRY_VERSION }}
         uses: "./.github/actions/poetry_setup"
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ inputs.python-version }}
           poetry-version: ${{ env.POETRY_VERSION }}
           working-directory: ${{ inputs.working-directory }}
           cache-key: core
 
       - name: Install dependencies
         shell: bash
-        run: poetry install --with test
+        run: poetry install --with test,test_integration
 
-      - name: Install langchain editable
-        working-directory: ${{ inputs.working-directory }}
-        if: ${{ inputs.langchain-location }}
-        env:
-          LANGCHAIN_LOCATION: ${{ inputs.langchain-location }}
-        run: |
-          poetry run pip install -e "$LANGCHAIN_LOCATION"
+      - name: 'Authenticate to Google Cloud'
+        id: 'auth'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GOOGLE_CREDENTIALS }}'
 
-      - name: Run core tests
+      - name: Run integration tests
         shell: bash
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_SEARCH_API_KEY: ${{ secrets.GOOGLE_SEARCH_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+          GOOGLE_VERTEX_AI_WEB_CREDENTIALS: ${{ secrets.GOOGLE_VERTEX_AI_WEB_CREDENTIALS }}
         run: |
-          make test
+          make integration_tests
 
       - name: Ensure the tests did not create any additional files
         shell: bash
