@@ -9,17 +9,25 @@
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple, Union
 
 from langchain_core.document_loaders import BaseLoader
 from langchain_core.documents import Document
 from pydantic import BaseModel, field_validator, model_validator
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-
 
 class GoogleDriveLoader(BaseLoader, BaseModel):
     """Load Google Docs from `Google Drive`."""
+
+    # Generated from https://developers.google.com/drive/api/guides/api-specific-auth
+    # limiting to the scopes that are required to read the files
+    VALID_SCOPES: ClassVar[Tuple[str, ...]] = (
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
+        "https://www.googleapis.com/auth/drive.metadata",
+    )
 
     service_account_key: Path = Path.home() / ".credentials" / "keys.json"
     """Path to the service account key file."""
@@ -27,6 +35,8 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
     """Path to the credentials file."""
     token_path: Path = Path.home() / ".credentials" / "token.json"
     """Path to the token file."""
+    credentials: Any = None
+    """Your own google credentials created via your own mechanism"""
     folder_id: Optional[str] = None
     """The folder id to load from."""
     document_ids: Optional[List[str]] = None
@@ -49,6 +59,9 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
     """Whether to load authorization identities."""
     load_extended_metadata: bool = False
     """Whether to load extended metadata."""
+    scopes: List[str] = ["https://www.googleapis.com/auth/drive.file"]
+    """The credential scopes to use for Google Drive API access. Default is 
+    drive.file scope."""
 
     def _get_file_size_from_id(self, id: str) -> str:
         """Fetch the size of the file."""
@@ -223,6 +236,7 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
                 "document": "application/vnd.google-apps.document",
                 "sheet": "application/vnd.google-apps.spreadsheet",
                 "pdf": "application/pdf",
+                "presentation": "application/vnd.google-apps.presentation",
             }
             allowed_types = list(type_mapping.keys()) + list(type_mapping.values())
             short_names = ", ".join([f"'{x}'" for x in type_mapping.keys()])
@@ -249,6 +263,22 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
             raise ValueError(f"credentials_path {v} does not exist")
         return v
 
+    @field_validator("scopes")
+    def validate_scopes(cls, v: List[str]) -> List[str]:
+        """Validate that the provided scopes are not empty and
+        are valid Google Drive API scopes."""
+        if not v:
+            raise ValueError("At least one scope must be provided")
+
+        invalid_scopes = [scope for scope in v if scope not in cls.VALID_SCOPES]
+        if invalid_scopes:
+            raise ValueError(
+                f"Invalid Google Drive API scope(s): {', '.join(invalid_scopes)}. "
+                f"Valid scopes are: {', '.join(cls.VALID_SCOPES)}"
+            )
+
+        return v
+
     def _load_credentials(self) -> Any:
         """Load credentials."""
         # Adapted from https://developers.google.com/drive/api/v3/quickstart/python
@@ -270,24 +300,31 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
         creds = None
         if self.service_account_key.exists():
             return service_account.Credentials.from_service_account_file(
-                str(self.service_account_key), scopes=SCOPES
+                str(self.service_account_key), scopes=self.scopes
             )
 
         if self.token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
+            creds = Credentials.from_authorized_user_file(
+                str(self.token_path), self.scopes
+            )
+
+        if self.credentials:
+            # use whatever was passed to us
+            creds = self.credentials
+            return creds
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             elif "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
                 creds, project = default()
-                creds = creds.with_scopes(SCOPES)
+                creds = creds.with_scopes(self.scopes)
                 # no need to write to file
                 if creds:
                     return creds
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    str(self.credentials_path), SCOPES
+                    str(self.credentials_path), self.scopes
                 )
                 creds = flow.run_local_server(port=0)
             with open(self.token_path, "w") as token:
@@ -369,7 +406,11 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
 
         file = (
             service.files()
-            .get(fileId=id, supportsAllDrives=True, fields="modifiedTime,name")
+            .get(
+                fileId=id,
+                supportsAllDrives=True,
+                fields="modifiedTime,name,webViewLink",
+            )
             .execute()
         )
         request = service.files().export_media(fileId=id, mimeType="text/plain")
@@ -388,7 +429,7 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
 
         text = fh.getvalue().decode("utf-8")
         metadata = {
-            "source": f"https://docs.google.com/document/d/{id}/edit",
+            "source": f"{file.get('webViewLink')}",
             "title": f"{file.get('name')}",
             "when": f"{file.get('modifiedTime')}",
         }
@@ -419,7 +460,10 @@ class GoogleDriveLoader(BaseLoader, BaseModel):
         for file in _files:
             if file["trashed"] and not self.load_trashed_files:
                 continue
-            elif file["mimeType"] == "application/vnd.google-apps.document":
+            elif file["mimeType"] in [
+                "application/vnd.google-apps.document",
+                "application/vnd.google-apps.presentation",
+            ]:
                 returns.append(self._load_document_from_id(file["id"]))  # type: ignore
             elif file["mimeType"] == "application/vnd.google-apps.spreadsheet":
                 returns.extend(self._load_sheet_from_id(file["id"]))  # type: ignore

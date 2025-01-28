@@ -29,6 +29,9 @@ from langchain_core.output_parsers.openai_tools import (
     PydanticToolsParser,
 )
 from pydantic import BaseModel
+from vertexai.generative_models import (  # type: ignore
+    SafetySetting as VertexSafetySetting,
+)
 from vertexai.language_models import (  # type: ignore
     ChatMessage,
     InputOutputTextPair,
@@ -41,6 +44,7 @@ from langchain_google_vertexai.chat_models import (
     _parse_examples,
     _parse_response_candidate,
 )
+from langchain_google_vertexai.model_garden import ChatAnthropicVertex
 
 
 def test_init() -> None:
@@ -115,10 +119,13 @@ def test_tuned_model_name() -> None:
         model_name="gemini-pro",
         project="test-project",
         tuned_model_name="projects/123/locations/europe-west4/endpoints/456",
+        max_tokens=500,
     )
     assert llm.model_name == "gemini-pro"
     assert llm.tuned_model_name == "projects/123/locations/europe-west4/endpoints/456"
     assert llm.full_model_name == "projects/123/locations/europe-west4/endpoints/456"
+    assert llm.max_output_tokens == 500
+    assert llm.max_tokens == 500
 
 
 def test_parse_examples_correct() -> None:
@@ -944,7 +951,7 @@ def test_safety_settings_gemini() -> None:
 
 def test_safety_settings_gemini_init() -> None:
     expected_safety_setting = [
-        SafetySetting(
+        VertexSafetySetting(
             category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
             threshold=SafetySetting.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
             method=SafetySetting.HarmBlockMethod.SEVERITY,
@@ -1067,3 +1074,65 @@ def test_init_client_with_custom_api() -> None:
         transport = mock_prediction_service.call_args.kwargs["transport"]
         assert client_options.api_endpoint == "https://example.com"
         assert transport == "rest"
+
+
+def test_anthropic_format_output() -> None:
+    """Test format output handles different content structures correctly."""
+
+    @dataclass
+    class Usage:
+        input_tokens: int
+        output_tokens: int
+        cache_creation_input_tokens: Optional[int]
+        cache_read_input_tokens: Optional[int]
+
+    @dataclass
+    class Message:
+        def model_dump(self):
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "123",
+                        "name": "calculator",
+                        "input": {"number": 42},
+                    }
+                ],
+                "model": "baz",
+                "role": "assistant",
+                "usage": Usage(
+                    input_tokens=2,
+                    output_tokens=1,
+                    cache_creation_input_tokens=1,
+                    cache_read_input_tokens=1,
+                ),
+                "type": "message",
+            }
+
+        usage: Usage
+
+    test_msg = Message(
+        usage=Usage(
+            input_tokens=2,
+            output_tokens=1,
+            cache_creation_input_tokens=1,
+            cache_read_input_tokens=1,
+        )
+    )
+
+    model = ChatAnthropicVertex(project="test-project", location="test-location")
+    result = model._format_output(test_msg)
+
+    message = result.generations[0].message
+    assert isinstance(message, AIMessage)
+    assert message.content == test_msg.model_dump()["content"]
+    assert len(message.tool_calls) == 1
+    assert message.tool_calls[0]["name"] == "calculator"
+    assert message.tool_calls[0]["args"] == {"number": 42}
+    assert message.usage_metadata == {
+        "input_tokens": 2,
+        "output_tokens": 1,
+        "total_tokens": 3,
+        "cache_creation_input_tokens": 1,
+        "cache_read_input_tokens": 1,
+    }

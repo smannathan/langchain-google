@@ -8,6 +8,7 @@ from typing import List, Literal, Optional, cast
 
 import pytest
 import requests
+import vertexai  # type: ignore[import-untyped, unused-ignore]
 from google.cloud import storage
 from google.cloud.aiplatform_v1beta1.types import Blob, Content, Part
 from google.oauth2 import service_account
@@ -219,6 +220,7 @@ def test_multimodal_media_file_uri(file_uri, mime_type) -> None:
 
 @pytest.mark.release
 @pytest.mark.parametrize("file_uri,mime_type", multimodal_inputs)
+@pytest.mark.first
 def test_multimodal_media_inline_base64(file_uri, mime_type) -> None:
     llm = ChatVertexAI(model_name="gemini-1.5-pro-001", rate_limiter=rate_limiter)
     storage_client = storage.Client()
@@ -239,6 +241,7 @@ def test_multimodal_media_inline_base64(file_uri, mime_type) -> None:
 
 
 @pytest.mark.release
+@pytest.mark.first
 def test_multimodal_media_inline_base64_template() -> None:
     llm = ChatVertexAI(model_name="gemini-1.5-pro-001")
     prompt_template = ChatPromptTemplate.from_messages(
@@ -691,6 +694,7 @@ def test_chat_vertexai_gemini_with_structured_output_nested_model() -> None:
     assert isinstance(response, Response)
 
 
+@pytest.mark.flaky(retries=3)
 @pytest.mark.release
 def test_chat_vertexai_gemini_function_calling_with_multiple_parts() -> None:
     @tool
@@ -769,6 +773,8 @@ def test_prediction_client_transport():
     assert model.prediction_client.transport.kind == "rest"
     assert model.async_prediction_client.transport.kind == "rest"
 
+    vertexai.init(api_transport="grpc")  # Reset global config to "grpc"
+
 
 @pytest.mark.extended
 def test_structured_output_schema_json():
@@ -844,6 +850,7 @@ def test_structured_output_schema_enum():
 
 
 @pytest.mark.extended
+@pytest.mark.first
 def test_context_catching():
     system_instruction = """
     
@@ -900,6 +907,77 @@ def test_context_catching():
 
     assert isinstance(response, AIMessage)
     assert isinstance(response.content, str)
+
+
+@pytest.mark.extended
+@pytest.mark.first
+def test_context_catching_tools():
+    from langchain import agents
+
+    @tool
+    def get_secret_number() -> int:
+        """Gets secret number."""
+        return 747
+
+    tools = [get_secret_number]
+    system_instruction = """
+    You are an expert researcher. You always stick to the facts in the sources
+    provided, and never make up new facts.
+
+    You have a get_secret_number function available. Use this tool if someone asks
+    for the secret number.
+        
+    Now look at these research papers, and answer the following questions.
+        
+    """
+
+    cached_content = create_context_cache(
+        model=ChatVertexAI(
+            model_name="gemini-1.5-pro-001",
+        ),
+        messages=[
+            SystemMessage(content=system_instruction),
+            HumanMessage(
+                content=[
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "gs://cloud-samples-data/generative-ai/pdf/2312.11805v3.pdf",
+                        },
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "gs://cloud-samples-data/generative-ai/pdf/2403.05530.pdf"
+                        },
+                    },
+                ]
+            ),
+        ],
+        tools=tools,
+    )
+
+    chat = ChatVertexAI(
+        model_name="gemini-1.5-pro-001",
+        cached_content=cached_content,
+    )
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("human", "{input}"),
+            ("placeholder", "{agent_scratchpad}"),
+        ]
+    )
+    agent = agents.create_tool_calling_agent(
+        llm=chat,
+        tools=tools,
+        prompt=prompt,
+    )
+    agent_executor = agents.AgentExecutor(  # type: ignore[call-arg]
+        agent=agent, tools=tools, verbose=False, stream_runnable=False
+    )
+    response = agent_executor.invoke({"input": "what is the secret number?"})
+    assert isinstance(response["output"], str)
 
 
 @pytest.mark.release
@@ -1100,6 +1178,7 @@ def test_multimodal_pdf_input_b64(multimodal_pdf_chain: RunnableSerializable) ->
         assert isinstance(response, AIMessage)
 
 
+@pytest.mark.xfail(reason="logprobs are subject to daily quotas")
 @pytest.mark.release
 def test_logprobs() -> None:
     llm = ChatVertexAI(model="gemini-1.5-flash", logprobs=2)
@@ -1125,3 +1204,23 @@ def test_logprobs() -> None:
     llm3 = ChatVertexAI(model="gemini-1.5-flash", logprobs=False)
     msg3 = llm3.invoke("howdy")
     assert msg3.response_metadata.get("logprobs_result") is None
+
+
+def test_location_init() -> None:
+    # If I don't initialize vertexai before, defaults to us-central-1
+    llm = ChatVertexAI(model="gemini-1.5-flash", logprobs=2)
+    assert llm.location == "us-central1"
+
+    # If I init vertexai with other region the model is in that particular region
+    vertexai.init(location="europe-west1")
+    llm = ChatVertexAI(model="gemini-1.5-flash", logprobs=2)
+    assert llm.location == "europe-west1"
+
+    # If I specify the location, it follows that location
+    llm = ChatVertexAI(model="gemini-1.5-flash", logprobs=2, location="europe-west2")
+    assert llm.location == "europe-west2"
+
+    # It reverts to the default
+    vertexai.init(location="us-central1")
+    llm = ChatVertexAI(model="gemini-1.5-flash", logprobs=2)
+    assert llm.location == "us-central1"

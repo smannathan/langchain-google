@@ -28,6 +28,7 @@ from pytest import CaptureFixture
 
 from langchain_google_genai.chat_models import (
     ChatGoogleGenerativeAI,
+    _convert_tool_message_to_part,
     _parse_chat_history,
     _parse_response_candidate,
 )
@@ -133,7 +134,8 @@ def test_parse_history(convert_system_message_to_human: bool) -> None:
     function_name = "calculator"
     function_call_1 = {
         "name": function_name,
-        "arguments": json.dumps({"arg1": "2", "arg2": "2", "op": "+"}),
+        "args": {"arg1": "2", "arg2": "2", "op": "+"},
+        "id": "0",
     }
     function_answer1 = json.dumps({"result": 4})
     function_call_2 = {
@@ -141,18 +143,28 @@ def test_parse_history(convert_system_message_to_human: bool) -> None:
         "arguments": json.dumps({"arg1": "2", "arg2": "2", "op": "*"}),
     }
     function_answer2 = json.dumps({"result": 4})
+    function_call_3 = {
+        "name": function_name,
+        "args": {"arg1": "2", "arg2": "2", "op": "*"},
+        "id": "1",
+    }
+    function_answer_3 = json.dumps({"result": 4})
+    function_call_4 = {
+        "name": function_name,
+        "args": {"arg1": "2", "arg2": "3", "op": "*"},
+        "id": "2",
+    }
+    function_answer_4 = json.dumps({"result": 6})
     text_answer1 = "They are same"
 
     system_message = SystemMessage(content=system_input)
     message1 = HumanMessage(content=text_question1)
     message2 = AIMessage(
         content="",
-        additional_kwargs={
-            "function_call": function_call_1,
-        },
+        tool_calls=[function_call_1],
     )
     message3 = ToolMessage(
-        name="calculator", content=function_answer1, tool_call_id="1"
+        name="calculator", content=function_answer1, tool_call_id="0"
     )
     message4 = AIMessage(
         content="",
@@ -161,7 +173,14 @@ def test_parse_history(convert_system_message_to_human: bool) -> None:
         },
     )
     message5 = FunctionMessage(name="calculator", content=function_answer2)
-    message6 = AIMessage(content=text_answer1)
+    message6 = AIMessage(content="", tool_calls=[function_call_3, function_call_4])
+    message7 = ToolMessage(
+        name="calculator", content=function_answer_3, tool_call_id="1"
+    )
+    message8 = ToolMessage(
+        name="calculator", content=function_answer_4, tool_call_id="2"
+    )
+    message9 = AIMessage(content=text_answer1)
     messages = [
         system_message,
         message1,
@@ -170,11 +189,14 @@ def test_parse_history(convert_system_message_to_human: bool) -> None:
         message4,
         message5,
         message6,
+        message7,
+        message8,
+        message9,
     ]
     system_instruction, history = _parse_chat_history(
         messages, convert_system_message_to_human=convert_system_message_to_human
     )
-    assert len(history) == 6
+    assert len(history) == 8
     if convert_system_message_to_human:
         assert history[0] == glm.Content(
             role="user",
@@ -191,7 +213,7 @@ def test_parse_history(convert_system_message_to_human: bool) -> None:
                 function_call=glm.FunctionCall(
                     {
                         "name": "calculator",
-                        "args": json.loads(function_call_1["arguments"]),
+                        "args": function_call_1["args"],
                     }
                 )
             )
@@ -236,7 +258,49 @@ def test_parse_history(convert_system_message_to_human: bool) -> None:
             )
         ],
     )
-    assert history[5] == glm.Content(role="model", parts=[glm.Part(text=text_answer1)])
+    assert history[5] == glm.Content(
+        role="model",
+        parts=[
+            glm.Part(
+                function_call=glm.FunctionCall(
+                    {
+                        "name": "calculator",
+                        "args": function_call_3["args"],
+                    }
+                )
+            ),
+            glm.Part(
+                function_call=glm.FunctionCall(
+                    {
+                        "name": "calculator",
+                        "args": function_call_4["args"],
+                    }
+                )
+            ),
+        ],
+    )
+    assert history[6] == glm.Content(
+        role="user",
+        parts=[
+            glm.Part(
+                function_response=glm.FunctionResponse(
+                    {
+                        "name": "calculator",
+                        "response": {"result": 4},
+                    }
+                )
+            ),
+            glm.Part(
+                function_response=glm.FunctionResponse(
+                    {
+                        "name": "calculator",
+                        "response": {"result": 6},
+                    }
+                )
+            ),
+        ],
+    )
+    assert history[7] == glm.Content(role="model", parts=[glm.Part(text=text_answer1)])
     if convert_system_message_to_human:
         assert system_instruction is None
     else:
@@ -559,3 +623,23 @@ def test_serialize() -> None:
     llm.client = None
     llm_loaded.client = None
     assert llm == llm_loaded
+
+
+@pytest.mark.parametrize(
+    "tool_message",
+    [
+        ToolMessage(name="tool_name", content="test_content", tool_call_id="1"),
+        # Legacy agent does not set `name`
+        ToolMessage(
+            additional_kwargs={"name": "tool_name"},
+            content="test_content",
+            tool_call_id="1",
+        ),
+    ],
+)
+def test__convert_tool_message_to_part__sets_tool_name(
+    tool_message: ToolMessage,
+) -> None:
+    part = _convert_tool_message_to_part(tool_message)
+    assert part.function_response.name == "tool_name"
+    assert part.function_response.response == {"output": "test_content"}

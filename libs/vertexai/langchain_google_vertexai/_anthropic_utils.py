@@ -31,7 +31,9 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from anthropic.types import RawMessageStreamEvent  # type: ignore
+    from anthropic.types import (
+        RawMessageStreamEvent,  # type: ignore[unused-ignore, import-not-found]
+    )
 
 _message_type_lookups = {
     "human": "user",
@@ -57,11 +59,104 @@ def _format_image(image_url: str) -> Dict:
     }
 
 
+def _get_cache_control(message: BaseMessage) -> Optional[Dict[str, Any]]:
+    """Extract cache control from message's additional_kwargs or content block."""
+    return (
+        message.additional_kwargs.get("cache_control")
+        if isinstance(message.additional_kwargs, dict)
+        else None
+    )
+
+
+def _format_text_content(text: str) -> Dict[str, Union[str, Dict[str, Any]]]:
+    """Format text content."""
+    content: Dict[str, Union[str, Dict[str, Any]]] = {"type": "text", "text": text}
+    return content
+
+
+def _format_message_anthropic(message: Union[HumanMessage, AIMessage, SystemMessage]):
+    """Format a message for Anthropic API.
+
+    Args:
+        message: The message to format. Can be HumanMessage, AIMessage, or SystemMessage.
+
+    Returns:
+        A dictionary with the formatted message, or None if the message is empty.
+    """  # noqa: E501
+    content: List[Dict[str, Any]] = []
+
+    if isinstance(message.content, str):
+        if not message.content.strip():
+            return None
+        message_dict = _format_text_content(message.content)
+        if cache_control := _get_cache_control(message):
+            message_dict["cache_control"] = cache_control
+        content.append(message_dict)
+    elif isinstance(message.content, list):
+        for block in message.content:
+            if isinstance(block, str):
+                # Only add non-empty strings for now as empty ones are not
+                # accepted.
+                # https://github.com/anthropics/anthropic-sdk-python/issues/461
+                if not block.strip():
+                    continue
+                content.append(_format_text_content(block))
+            elif isinstance(block, dict):
+                if "type" not in block:
+                    raise ValueError("Dict content block must have a type key")
+
+                new_block = {}
+
+                for copy_attr in ["type", "cache_control"]:
+                    if copy_attr in block:
+                        new_block[copy_attr] = block[copy_attr]
+
+                if block["type"] == "text":
+                    text: str = block.get("text", "")
+                    # Only add non-empty strings for now as empty ones are not
+                    # accepted.
+                    # https://github.com/anthropics/anthropic-sdk-python/issues/461
+                    if text.strip():
+                        new_block["text"] = text
+                        content.append(new_block)
+                    continue
+
+                if block["type"] == "image_url":
+                    # convert format
+                    source = _format_image(block["image_url"]["url"])
+                    content.append({"type": "image", "source": source})
+                    continue
+
+                if block["type"] == "tool_use":
+                    # If a tool_call with the same id as a tool_use content block
+                    # exists, the tool_call is preferred.
+                    if isinstance(message, AIMessage) and message.tool_calls:
+                        is_unique = block["id"] not in [
+                            tc["id"] for tc in message.tool_calls
+                        ]
+                        if not is_unique:
+                            continue
+
+                content.append(block)
+    else:
+        raise ValueError("Message should be a str, list of str or list of dicts")
+
+    if isinstance(message, AIMessage) and message.tool_calls:
+        for tc in message.tool_calls:
+            tu = cast(Dict[str, Any], _lc_tool_call_to_anthropic_tool_use_block(tc))
+            content.append(tu)
+
+    if message.type == "system":
+        return content
+    else:
+        return {"role": _message_type_lookups[message.type], "content": content}
+
+
 def _format_messages_anthropic(
     messages: List[BaseMessage],
-) -> Tuple[Optional[str], List[Dict]]:
+) -> Tuple[Optional[Dict[str, Any]], List[Dict]]:
     """Formats messages for anthropic."""
-    system_message: Optional[str] = None
+    system_messages: Optional[Dict[str, Any]] = None
     formatted_messages: List[Dict] = []
 
     merged_messages = _merge_messages(messages)
@@ -69,90 +164,17 @@ def _format_messages_anthropic(
         if message.type == "system":
             if i != 0:
                 raise ValueError("System message must be at beginning of message list.")
-            if not isinstance(message.content, str):
-                raise ValueError(
-                    "System message must be a string, "
-                    f"instead was: {type(message.content)}"
-                )
-            system_message = message.content
+            fm = _format_message_anthropic(message)
+            if fm:
+                system_messages = fm
             continue
 
-        role = _message_type_lookups[message.type]
-        content: Union[str, List]
+        fm = _format_message_anthropic(message)
+        if not fm:
+            continue
+        formatted_messages.append(fm)
 
-        if not isinstance(message.content, str):
-            # parse as dict
-            assert isinstance(
-                message.content, list
-            ), "Anthropic message content must be str or list of dicts"
-
-            # populate content
-            content = []
-            for item in message.content:
-                if isinstance(item, str):
-                    content.append(
-                        {
-                            "type": "text",
-                            "text": item,
-                        }
-                    )
-                elif isinstance(item, dict):
-                    if "type" not in item:
-                        raise ValueError("Dict content item must have a type key")
-                    elif item["type"] == "image_url":
-                        # convert format
-                        source = _format_image(item["image_url"]["url"])
-                        content.append(
-                            {
-                                "type": "image",
-                                "source": source,
-                            }
-                        )
-                    elif item["type"] == "tool_use":
-                        # If a tool_call with the same id as a tool_use content block
-                        # exists, the tool_call is preferred.
-                        if isinstance(message, AIMessage) and item["id"] in [
-                            tc["id"] for tc in message.tool_calls
-                        ]:
-                            overlapping = [
-                                tc
-                                for tc in message.tool_calls
-                                if tc["id"] == item["id"]
-                            ]
-                            content.extend(
-                                _lc_tool_calls_to_anthropic_tool_use_blocks(overlapping)
-                            )
-                        else:
-                            item.pop("text", None)
-                            content.append(item)
-                    elif item["type"] == "text":
-                        text = item.get("text", "")
-                        # Only add non-empty strings for now as empty ones are not
-                        # accepted.
-                        # https://github.com/anthropics/anthropic-sdk-python/issues/461
-                        if text.strip():
-                            content.append({"type": "text", "text": text})
-                    else:
-                        content.append(item)
-                else:
-                    raise ValueError(
-                        f"Content items must be str or dict, instead was: {type(item)}"
-                    )
-        elif isinstance(message, AIMessage) and message.tool_calls:
-            content = (
-                []
-                if not message.content
-                else [{"type": "text", "text": message.content}]
-            )
-            # Note: Anthropic can't have invalid tool calls as presently defined,
-            # since the model already returns dicts args not JSON strings, and invalid
-            # tool calls are those with invalid JSON for args.
-            content += _lc_tool_calls_to_anthropic_tool_use_blocks(message.tool_calls)
-        else:
-            content = message.content
-
-        formatted_messages.append({"role": role, "content": content})
-    return system_message, formatted_messages
+    return system_messages, formatted_messages
 
 
 class AnthropicTool(TypedDict):
@@ -184,7 +206,7 @@ def _merge_messages(
     """Merge runs of human/tool messages into single human messages with content blocks."""  # noqa: E501
     merged: list = []
     for curr in messages:
-        curr = curr.copy(deep=True)
+        curr = curr.model_copy(deep=True)
         if isinstance(curr, ToolMessage):
             if isinstance(curr.content, list) and all(
                 isinstance(block, dict) and block.get("type") == "tool_result"
@@ -224,20 +246,15 @@ class _AnthropicToolUse(TypedDict):
     id: str
 
 
-def _lc_tool_calls_to_anthropic_tool_use_blocks(
-    tool_calls: List[ToolCall],
-) -> List[_AnthropicToolUse]:
-    blocks = []
-    for tool_call in tool_calls:
-        blocks.append(
-            _AnthropicToolUse(
-                type="tool_use",
-                name=tool_call["name"],
-                input=tool_call["args"],
-                id=cast(str, tool_call["id"]),
-            )
-        )
-    return blocks
+def _lc_tool_call_to_anthropic_tool_use_block(
+    tool_call: ToolCall,
+) -> _AnthropicToolUse:
+    return _AnthropicToolUse(
+        type="tool_use",
+        name=tool_call["name"],
+        input=tool_call["args"],
+        id=cast(str, tool_call["id"]),
+    )
 
 
 def _make_message_chunk_from_anthropic_event(

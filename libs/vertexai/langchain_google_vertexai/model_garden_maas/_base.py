@@ -33,6 +33,8 @@ from langchain_google_vertexai._base import _VertexAIBase
 _MISTRAL_MODELS: List[str] = [
     "mistral-nemo@2407",
     "mistral-large@2407",
+    "mistral-large-2411@001",
+    "codestral-2501@001",
 ]
 _LLAMA_MODELS: List[str] = [
     "meta/llama3-405b-instruct-maas",
@@ -44,7 +46,11 @@ _LLAMA_MODELS: List[str] = [
 
 def _get_token(credentials: Optional[Credentials] = None) -> str:
     """Returns a valid token for GCP auth."""
-    credentials = auth.default()[0] if not credentials else credentials
+    credentials = (
+        auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])[0]
+        if not credentials
+        else credentials
+    )
     request = auth_requests.Request()
     credentials.refresh(request)
     if not credentials.token:

@@ -252,11 +252,15 @@ def _format_to_gapic_function_declaration(
         return _format_base_tool_to_function_declaration(tool)
     elif isinstance(tool, type) and issubclass(tool, BaseModel):
         return _format_pydantic_to_function_declaration(tool)
-    elif callable(tool):
+    elif callable(tool) and not (
+        isinstance(tool, type) and hasattr(tool, "__annotations__")
+    ):
         return _format_base_tool_to_function_declaration(callable_as_lc_tool()(tool))
     elif isinstance(tool, vertexai.FunctionDeclaration):
         return _format_vertex_to_function_declaration(tool)
-    elif isinstance(tool, dict):
+    elif isinstance(tool, dict) or (
+        isinstance(tool, type) and hasattr(tool, "__annotations__")
+    ):
         # this could come from
         # 'langchain_core.utils.function_calling.convert_to_openai_tool'
         function = convert_to_openai_tool(cast(dict, tool))["function"]
@@ -283,6 +287,8 @@ def _format_to_gapic_tool(tools: _ToolsType) -> gapic.Tool:
                 gapic_tool.google_search_retrieval = rt.google_search_retrieval
             if "function_declarations" in rt:
                 gapic_tool.function_declarations.extend(rt.function_declarations)
+            if "google_search" in rt:
+                gapic_tool.google_search = rt.google_search
         elif isinstance(tool, dict):
             # not _ToolDictLike
             if not any(
